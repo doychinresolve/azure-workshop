@@ -1,0 +1,217 @@
+$env:PROJECT="java-runtimes"
+$env:RESOURCE_GROUP="rg-" + $env:PROJECT
+$env:LOCATION="eastus"
+$env:TAG="java-runtimes"
+
+$env:LOG_ANALYTICS_WORKSPACE="logs-java-runtimes"
+$env:CONTAINERAPPS_ENVIRONMENT="env-java-runtimes"
+
+# If you're using a dev container, you should manually set this to
+# a unique value (like your name) to avoid conflicts with other users.
+$env:UNIQUE_IDENTIFIER=$env:USERNAME
+$env:REGISTRY="javaruntimesregistry" + $env:UNIQUE_IDENTIFIER
+$env:IMAGES_TAG="1.0"
+
+$env:POSTGRES_DB_ADMIN="javaruntimesadmin"
+$env:POSTGRES_DB_PWD="java-runtimes-p#ssw0rd-12046"
+$env:POSTGRES_DB_VERSION="13"
+$env:POSTGRES_SKU="Standard_B2s"
+$env:POSTGRES_TIER="Burstable"
+$env:POSTGRES_DB="db-stats-" + $env:UNIQUE_IDENTIFIER
+$env:POSTGRES_DB_SCHEMA="stats"
+$env:POSTGRES_DB_CONNECT_STRING="jdbc:postgresql://" + $env:POSTGRES_DB + ".postgres.database.azure.com:5432/" + $env:POSTGRES_DB_SCHEMA + "?ssl=true&sslmode=require"
+
+$env:QUARKUS_APP="quarkus-app"
+$env:MICRONAUT_APP="micronaut-app"
+$env:SPRING_APP="springboot-app"
+
+
+ az group create --name "$env:RESOURCE_GROUP" --location "$env:LOCATION" --tags system="$env:TAG"
+
+
+az monitor log-analytics workspace create    --resource-group "$env:RESOURCE_GROUP"  --location "$env:LOCATION"  --tags system="$env:TAG"  --workspace-name "$env:LOG_ANALYTICS_WORKSPACE"
+
+$env:LOG_ANALYTICS_WORKSPACE_CLIENT_ID=$(`
+    az monitor log-analytics workspace `
+    show --resource-group "$env:RESOURCE_GROUP" `
+    --workspace-name "$env:LOG_ANALYTICS_WORKSPACE" `
+    --query customerId `
+    --output tsv).replace(" ", "")
+	
+"LOG_ANALYTICS_WORKSPACE_CLIENT_ID=$env:LOG_ANALYTICS_WORKSPACE_CLIENT_ID"
+
+$env:LOG_ANALYTICS_WORKSPACE_CLIENT_SECRET=$(`
+    az monitor log-analytics workspace get-shared-keys `
+    --resource-group "$env:RESOURCE_GROUP" `
+    --workspace-name "$env:LOG_ANALYTICS_WORKSPACE" `
+    --query primarySharedKey `
+    --output tsv).replace(" ", "")
+
+"LOG_ANALYTICS_WORKSPACE_CLIENT_SECRET=$env:LOG_ANALYTICS_WORKSPACE_CLIENT_SECRET"
+
+az acr create `
+  --resource-group "$env:RESOURCE_GROUP" `
+  --location "$env:LOCATION" `
+  --tags system="$env:TAG" `
+  --name "$env:REGISTRY" `
+  --workspace "$env:LOG_ANALYTICS_WORKSPACE" `
+  --sku Standard `
+  --admin-enabled true
+
+az acr update `
+  --resource-group "$env:RESOURCE_GROUP" `
+  --name "$env:REGISTRY" `
+  --anonymous-pull-enabled true
+
+
+$env:REGISTRY_URL=$(
+  az acr show `
+    --resource-group "$env:RESOURCE_GROUP" `
+    --name "$env:REGISTRY" `
+    --query "loginServer" `
+    --output tsv
+)
+
+"REGISTRY_URL=$env:REGISTRY_URL"
+
+az provider register -n Microsoft.App --wait
+
+az containerapp env create `
+    --resource-group "$env:RESOURCE_GROUP" `
+    --location "$env:LOCATION" `
+    --tags system="$env:TAG" `
+    --name "$env:CONTAINERAPPS_ENVIRONMENT" `
+    --logs-workspace-id "$env:LOG_ANALYTICS_WORKSPACE_CLIENT_ID" `
+    --logs-workspace-key "$env:LOG_ANALYTICS_WORKSPACE_CLIENT_SECRET"
+
+az containerapp create `
+  --resource-group "$env:RESOURCE_GROUP" `
+  --tags system="$env:TAG" application="$env:QUARKUS_APP" `
+  --image "mcr.microsoft.com/azuredocs/containerapps-helloworld:latest" `
+  --name "$env:QUARKUS_APP" `
+  --environment "$env:CONTAINERAPPS_ENVIRONMENT" `
+  --ingress external `
+  --target-port 80 `
+  --min-replicas 0 `
+  --env-vars QUARKUS_HIBERNATE_ORM_DATABASE_GENERATION=validate `
+             QUARKUS_HIBERNATE_ORM_SQL_LOAD_SCRIPT=no-file `
+             QUARKUS_DATASOURCE_USERNAME="$env:POSTGRES_DB_ADMIN" `
+             QUARKUS_DATASOURCE_PASSWORD="$env:POSTGRES_DB_PWD" `
+             QUARKUS_DATASOURCE_JDBC_URL="$env:POSTGRES_DB_CONNECT_STRING"
+
+az containerapp create `
+  --resource-group "$env:RESOURCE_GROUP" `
+  --tags system="$env:TAG" application="$env:MICRONAUT_APP" `
+  --image "mcr.microsoft.com/azuredocs/containerapps-helloworld:latest" `
+  --name "$env:MICRONAUT_APP" `
+  --environment "$env:CONTAINERAPPS_ENVIRONMENT" `
+  --ingress external `
+  --target-port 80 `
+  --min-replicas 0 `
+  --env-vars DATASOURCES_DEFAULT_USERNAME="$env:POSTGRES_DB_ADMIN" `
+             DATASOURCES_DEFAULT_PASSWORD="$env:POSTGRES_DB_PWD" `
+             DATASOURCES_DEFAULT_URL="$env:POSTGRES_DB_CONNECT_STRING"
+
+az containerapp create `
+  --resource-group "$env:RESOURCE_GROUP" `
+  --tags system="$env:TAG" application="$env:SPRING_APP" `
+  --image "mcr.microsoft.com/azuredocs/containerapps-helloworld:latest" `
+  --name "$env:SPRING_APP" `
+  --environment "$env:CONTAINERAPPS_ENVIRONMENT" `
+  --ingress external `
+  --target-port 80 `
+  --min-replicas 0 `
+  --env-vars SPRING_DATASOURCE_USERNAME="$env:POSTGRES_DB_ADMIN" `
+             SPRING_DATASOURCE_PASSWORD="$env:POSTGRES_DB_PWD" `
+             SPRING_DATASOURCE_URL="$env:POSTGRES_DB_CONNECT_STRING"
+
+
+$env:QUARKUS_HOST=$( `
+  az containerapp show `
+    --name "$env:QUARKUS_APP" `
+    --resource-group "$env:RESOURCE_GROUP" `
+    --query "properties.configuration.ingress.fqdn" `
+    --output tsv `
+)
+
+"QUARKUS_HOST=$env:QUARKUS_HOST"
+
+$env:MICRONAUT_HOST=$(
+  az containerapp show `
+    --name "$env:MICRONAUT_APP" `
+    --resource-group "$env:RESOURCE_GROUP" `
+    --query "properties.configuration.ingress.fqdn" `
+    --output tsv `
+)
+
+"MICRONAUT_HOST=$env:MICRONAUT_HOST"
+
+$env:SPRING_HOST=$(
+  az containerapp show `
+    --name "$env:SPRING_APP" `
+    --resource-group "$env:RESOURCE_GROUP" `
+    --query "properties.configuration.ingress.fqdn" `
+    --output tsv `
+)
+
+"SPRING_HOST=$env:SPRING_HOST"
+
+
+az postgres flexible-server create `
+  --resource-group "$env:RESOURCE_GROUP" `
+  --location "$env:LOCATION" `
+  --tags system="$env:TAG" `
+  --name "$env:POSTGRES_DB" `
+  --database-name "$env:POSTGRES_DB_SCHEMA" `
+  --admin-user "$env:POSTGRES_DB_ADMIN" `
+  --admin-password "$env:POSTGRES_DB_PWD" `
+  --public all `
+  --tier "$env:POSTGRES_TIER" `
+  --sku-name "$env:POSTGRES_SKU" `
+  --storage-size 256 `
+  --version "$env:POSTGRES_DB_VERSION"
+
+
+  az postgres flexible-server execute `
+    --name "$env:POSTGRES_DB" `
+    --admin-user "$env:POSTGRES_DB_ADMIN" `
+    --admin-password "$env:POSTGRES_DB_PWD" `
+    --database-name "$env:POSTGRES_DB_SCHEMA" `
+    --file-path "infrastructure/db-init/initialize-databases.sql"
+
+
+az postgres flexible-server execute `
+  --name "$env:POSTGRES_DB" `
+  --admin-user "$env:POSTGRES_DB_ADMIN" `
+  --admin-password "$env:POSTGRES_DB_PWD" `
+  --database-name "$env:POSTGRES_DB_SCHEMA" `
+  --querytext "select * from Statistics_Quarkus"
+
+$env:POSTGRES_CONNECTION_STRING=$(
+  az postgres flexible-server show-connection-string `
+    --server-name "$env:POSTGRES_DB" `
+    --admin-user "$env:POSTGRES_DB_ADMIN" `
+    --admin-password "$env:POSTGRES_DB_PWD" `
+    --database-name "$env:POSTGRES_DB_SCHEMA" `
+    --query "connectionStrings.jdbc" `
+    --output tsv
+)
+
+"POSTGRES_CONNECTION_STRING=$env:POSTGRES_CONNECTION_STRING"
+
+
+$env:REGISTRY_USERNAME=$(
+  az acr credential show `
+    --name "$env:REGISTRY" `
+    --query "username" `
+    --output tsv
+)
+"REGISTRY_USERNAME=$env:REGISTRY_USERNAME"
+
+$env:REGISTRY_PASSWORD=$(
+  az acr credential show `
+    --name "$env:REGISTRY" `
+    --query "passwords[0].value" `
+    --output tsv
+)
+"REGISTRY_PASSWORD=$env:REGISTRY_PASSWORD"
